@@ -37,7 +37,8 @@ class Bot:
                 message = f"❌ {name} is still offline 😞"
                 await context.bot.send_message(chat_id=watcher.chat_id, text=message)
 
-            if watcher.times_checked > self.runs_before_giving_up:
+            max_runs = watcher.max_runs if watcher.max_runs is not None else self.runs_before_giving_up
+            if watcher.times_checked > max_runs:
                 message = f"⌛ {name} was offline for too long, giving up.\n\n"
                 message += "If you want, you can run me again."
                 await context.bot.send_message(chat_id=watcher.chat_id, text=message)
@@ -64,7 +65,8 @@ class Bot:
 
         await context.bot.send_message(chat_id, message)
 
-        watch = RestaurantWatch(chat_id, restaurant['slug'])
+        custom_max_runs = self.user_timeouts.get(chat_id)
+        watch = RestaurantWatch(chat_id, restaurant['slug'], custom_max_runs)
         self.watchlist.add(watch)
 
     async def handle_multiple_restaurants(self, update, results):
@@ -168,10 +170,61 @@ class Bot:
                 text="You need to set a watch first!"
             )    
     
+    async def help_command(self, update, context):
+        help_text = (
+            "Here's how to use WoltWatcher:\n\n"
+            "1. Send me a Wolt restaurant link (e.g., https://wolt.com/en/isr/tel-aviv/restaurant/gdb).\n"
+            "2. I will monitor the restaurant and send you a message when it accepts orders again.\n\n"
+            "Available commands:\n"
+            "/start - Start the bot\n"
+            "/help - Show this help message\n"
+            "/mute - Mute notifications while checking (only notify when online)\n"
+            "/unmute - Unmute notifications (notify if still offline on each check)\n"
+            "/timeout <minutes> - Set a custom timeout before giving up (default: 2 hours)"
+        )
+        await context.bot.send_message(
+            chat_id=update.message.chat_id,
+            text=help_text
+        )
+
+    async def timeout(self, update, context):
+        try:
+            if not context.args:
+                await context.bot.send_message(
+                    chat_id=update.message.chat_id,
+                    text="Please provide a timeout in minutes. Example: /timeout 60"
+                )
+                return
+            
+            minutes = int(context.args[0])
+            if minutes <= 0:
+                await context.bot.send_message(
+                    chat_id=update.message.chat_id,
+                    text="Timeout must be a positive number."
+                )
+                return
+
+            max_runs = int((minutes * 60) / self.tick_frequency)
+            self.user_timeouts[update.message.chat_id] = max_runs
+            
+            users_watcher = self.watchlist.get_watcher(update.message.chat_id)
+            if users_watcher:
+                users_watcher.max_runs = max_runs
+                
+            await context.bot.send_message(
+                chat_id=update.message.chat_id,
+                text=f"Timeout set to {minutes} minutes."
+            )
+        except ValueError:
+            await context.bot.send_message(
+                chat_id=update.message.chat_id,
+                text="Invalid format. Please provide a number of minutes. Example: /timeout 60"
+            )
+
     async def start(self, update, context):
         await context.bot.send_message(
             chat_id=update.message.chat_id,
-            text="Hey! To start, send me a link to a restaurant or enter its name!"
+            text="Hey! To start, send me a link to a restaurant or enter its name! Type /help for more information and commands."
         )
     
     def run_bot(self):
@@ -188,15 +241,21 @@ class Bot:
         logging.debug('Registering with Telegram...')
 
         self.bot_password = config.password
-        self.runs_before_giving_up = config.runs_before_giving_up
         self.tick_frequency = config.tick_frequency
+        
+        # Override config's default timeout to 2 hours
+        self.runs_before_giving_up = int(7200 / self.tick_frequency) if self.tick_frequency else 120
+        
         self.restaurant_filters = config.filters
         self.watchlist = RestaurantWatchlist()
+        self.user_timeouts = {}
 
         self.application = ApplicationBuilder().token(config.token).build()
         self.application.add_handler(CommandHandler('start', self.start))
+        self.application.add_handler(CommandHandler('help', self.help_command))
         self.application.add_handler(CommandHandler('mute', self.mute))
         self.application.add_handler(CommandHandler('unmute', self.unmute))
+        self.application.add_handler(CommandHandler('timeout', self.timeout))
         self.application.add_handler(MessageHandler(filters.TEXT, self.free_text))
         self.application.add_handler(CallbackQueryHandler(self.handle_choice))
 

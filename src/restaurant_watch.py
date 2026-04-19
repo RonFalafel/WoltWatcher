@@ -4,11 +4,12 @@ Define a restaurant watch list
 import logging
 
 class RestaurantWatch:
-    def __init__(self, chat_id: str, slug: str):
+    def __init__(self, chat_id: str, slug: str, max_runs: int = None):
         self.chat_id = chat_id
         self.slug = slug
         self.times_checked = 0
         self.is_muted = True
+        self.max_runs = max_runs
 
 class RestaurantWatchlist:
     def __init__(self):
